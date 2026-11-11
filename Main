@@ -1,0 +1,272 @@
+ToDo List con Paradigma Funcional
+Aplicando lo Aprendido
+const readline = require('readline');
+const fs = require('fs');
+
+const ARCHIVO = 'tareas.json';
+const ESTADOS = Object.freeze(['Pendiente', 'En Curso', 'Terminada', 'Cancelada']);
+const DIFICULTADES = Object.freeze(['Fácil', 'Medio', 'Difícil']);
+const CAMPOS_ORDEN = Object.freeze(['titulo', 'estado', 'dificultad', 'creacion', 'vencimiento']);
+const OPCIONES_MENU = Object.freeze([
+  '1) Crear tarea',
+  '2) Ver todas las tareas',
+  '3) Filtrar por estado',
+  '4) Buscar por título',
+  '5) Ordenar tareas',
+  '6) Actualizar una tarea',
+  '7) Ver resumen',
+  '0) Salir',
+]);
+
+const congelar = (x) => Object.freeze(x);
+const pipe = (...fns) => (x) => fns.reduce((acc, f) => f(acc), x);
+const compose = (...fns) => (x) => fns.reduceRight((acc, f) => f(acc), x);
+
+const recortar = (texto) => texto.trim();
+const minusculas = (texto) => texto.toLowerCase();
+const normalizarTexto = compose(minusculas, recortar);
+
+const esVacio = (texto) => texto.trim().length === 0;
+
+const ok = (valor) => ({ ok: true, valor });
+const fallo = (error) => ({ ok: false, error });
+
+const validarTitulo = (titulo) => recortar(titulo).length > 0 && titulo.length <= 100;
+const validarDescripcion = (descripcion) => descripcion.length <= 500;
+const esFechaValida = (fecha) => fecha instanceof Date && !Number.isNaN(fecha.getTime());
+
+const parsearTitulo = (texto) =>
+  validarTitulo(texto)
+    ? ok(recortar(texto))
+    : fallo('El título no puede estar vacío ni pasar de 100 caracteres.');
+
+const parsearTituloOpcional = (texto) =>
+  recortar(texto) === '' ? ok(null) : parsearTitulo(texto);
+
+const parsearDescripcion = (texto) =>
+  validarDescripcion(texto)
+    ? ok(texto)
+    : fallo('La descripción no puede pasar de 500 caracteres.');
+
+const parsearFecha = (texto) => {
+  const limpio = recortar(texto);
+  const fecha = new Date(limpio);
+  return limpio === ''
+    ? ok(null)
+    : esFechaValida(fecha)
+      ? ok(fecha)
+      : fallo('Fecha inválida, usá el formato AAAA-MM-DD.');
+};
+
+const parsearOpcion = (opciones, porDefecto) => (texto) => {
+  const limpio = recortar(texto);
+  const elegida = opciones[Number(limpio) - 1];
+  return limpio === '' && porDefecto !== undefined
+    ? ok(porDefecto)
+    : elegida === undefined
+      ? fallo(`Elegí un número entre 1 y ${opciones.length}.`)
+      : ok(elegida);
+};
+
+const parsearId = (lista) => (texto) => {
+  const id = Number(recortar(texto));
+  return lista.some((t) => t.id === id) ? ok(id) : fallo('No existe una tarea con ese id.');
+};
+
+const siguienteId = (lista) => lista.reduce((max, t) => Math.max(max, t.id), 0) + 1;
+
+const crearTarea = (datos, ahora) =>
+  congelar({
+    id: datos.id,
+    titulo: recortar(datos.titulo),
+    descripcion: datos.descripcion ?? '',
+    estado: datos.estado ?? 'Pendiente',
+    creacion: ahora,
+    ultimaEdicion: ahora,
+    vencimiento: datos.vencimiento ?? null,
+    dificultad: datos.dificultad ?? 'Fácil',
+  });
+
+const agregarTarea = (lista, tarea) => congelar([...lista, tarea]);
+
+const actualizarTarea = (lista, id, cambios, ahora) =>
+  congelar(
+    lista.map((t) => (t.id === id ? congelar({ ...t, ...cambios, ultimaEdicion: ahora }) : t))
+  );
+
+const armarCambios = (entradas) =>
+  Object.fromEntries(Object.entries(entradas).filter(([, valor]) => valor !== null));
+
+const filtrarPor = (predicado) => (lista) => congelar(lista.filter(predicado));
+
+const porEstado = (estado) => (tarea) => tarea.estado === estado;
+const porDificultad = (dificultad) => (tarea) => tarea.dificultad === dificultad;
+const porTitulo = (texto) => (tarea) =>
+  normalizarTexto(tarea.titulo).includes(normalizarTexto(texto));
+const estaVencida = (ahora) => (tarea) =>
+  tarea.vencimiento !== null &&
+  tarea.vencimiento < ahora &&
+  !['Terminada', 'Cancelada'].includes(tarea.estado);
+
+const extractores = congelar({
+  titulo: (t) => minusculas(t.titulo),
+  estado: (t) => ESTADOS.indexOf(t.estado),
+  dificultad: (t) => DIFICULTADES.indexOf(t.dificultad),
+  creacion: (t) => t.creacion.getTime(),
+  vencimiento: (t) => (t.vencimiento === null ? Infinity : t.vencimiento.getTime()),
+});
+
+const comparar = (extractor) => (a, b) =>
+  extractor(a) < extractor(b) ? -1 : extractor(a) > extractor(b) ? 1 : 0;
+
+const ordenarPor = (campo) => (lista) =>
+  congelar([...lista].sort(comparar(extractores[campo])));
+
+const contarPorEstado = (lista) =>
+  ESTADOS.reduce(
+    (acc, estado) => ({ ...acc, [estado]: lista.filter(porEstado(estado)).length }),
+    {}
+  );
+
+const formatearFecha = (fecha) =>
+  fecha === null ? 'sin fecha' : fecha.toISOString().slice(0, 10);
+
+const formatearTarea = (t) =>
+  `[${t.id}] ${t.titulo} | ${t.estado} | ${t.dificultad} | vence: ${formatearFecha(t.vencimiento)}` +
+  (t.descripcion === '' ? '' : `\n     ${t.descripcion}`);
+
+const formatearLista = (lista) =>
+  lista.length === 0 ? 'No hay tareas para mostrar.' : lista.map(formatearTarea).join('\n');
+
+const formatearOpciones = (opciones) => opciones.map((o, i) => `${i + 1}) ${o}`).join('  ');
+const formatearMenu = (opciones) => `\n===== TAREAS =====\n${opciones.join('\n')}`;
+const formatearResumen = (conteo) =>
+  Object.entries(conteo)
+    .map(([estado, n]) => `${estado}: ${n}`)
+    .join('\n');
+
+const serializar = (lista) => JSON.stringify(lista, null, 2);
+
+const CAMPOS_FECHA = congelar(['creacion', 'ultimaEdicion', 'vencimiento']);
+const reviver = (clave, valor) =>
+  CAMPOS_FECHA.includes(clave) && valor !== null ? new Date(valor) : valor;
+
+const deserializar = (texto) => congelar(JSON.parse(texto, reviver).map(congelar));
+
+const mostrar = (texto) => console.log(texto);
+
+const preguntar = (rl, texto) => new Promise((resolver) => rl.question(texto, resolver));
+
+const cargarTareas = (ruta) =>
+  fs.existsSync(ruta) ? deserializar(fs.readFileSync(ruta, 'utf8')) : congelar([]);
+
+const guardarTareas = (ruta, lista) => fs.writeFileSync(ruta, serializar(lista), 'utf8');
+
+const pedirValido = async (rl, texto, parser) => {
+  const resultado = parser(await preguntar(rl, texto));
+  return resultado.ok
+    ? resultado.valor
+    : (mostrar(resultado.error), pedirValido(rl, texto, parser));
+};
+
+const pedirDatosTarea = async (rl) => ({
+  titulo: await pedirValido(rl, 'Título (máx 100): ', parsearTitulo),
+  descripcion: await pedirValido(rl, 'Descripción (opcional, máx 500): ', parsearDescripcion),
+  estado: await pedirValido(
+    rl,
+    `Estado ${formatearOpciones(ESTADOS)} [Enter = Pendiente]: `,
+    parsearOpcion(ESTADOS, 'Pendiente')
+  ),
+  vencimiento: await pedirValido(rl, 'Vencimiento AAAA-MM-DD (opcional): ', parsearFecha),
+  dificultad: await pedirValido(
+    rl,
+    `Dificultad ${formatearOpciones(DIFICULTADES)} [Enter = Fácil]: `,
+    parsearOpcion(DIFICULTADES, 'Fácil')
+  ),
+});
+
+const ejecutarOpcion = async (rl, lista, opcion) => {
+  const ahora = new Date();
+  switch (opcion) {
+    case '1': {
+      const datos = await pedirDatosTarea(rl);
+      mostrar('Tarea creada!');
+      return agregarTarea(lista, crearTarea({ ...datos, id: siguienteId(lista) }, ahora));
+    }
+    case '2':
+      mostrar(formatearLista(lista));
+      return lista;
+    case '3': {
+      const estado = await pedirValido(
+        rl,
+        `Estado ${formatearOpciones(ESTADOS)}: `,
+        parsearOpcion(ESTADOS)
+      );
+      mostrar(formatearLista(filtrarPor(porEstado(estado))(lista)));
+      return lista;
+    }
+    case '4': {
+      const texto = await preguntar(rl, 'Texto a buscar: ');
+      mostrar(formatearLista(filtrarPor(porTitulo(texto))(lista)));
+      return lista;
+    }
+    case '5': {
+      const campo = await pedirValido(
+        rl,
+        `Ordenar por ${formatearOpciones(CAMPOS_ORDEN)}: `,
+        parsearOpcion(CAMPOS_ORDEN)
+      );
+      mostrar(formatearLista(ordenarPor(campo)(lista)));
+      return lista;
+    }
+    case '6': {
+      mostrar(formatearLista(lista));
+      const id = await pedirValido(rl, 'Id de la tarea a actualizar: ', parsearId(lista));
+      const cambios = armarCambios({
+        titulo: await pedirValido(
+          rl,
+          'Nuevo título [Enter = no cambiar]: ',
+          parsearTituloOpcional
+        ),
+        estado: await pedirValido(
+          rl,
+          `Nuevo estado ${formatearOpciones(ESTADOS)} [Enter = no cambiar]: `,
+          parsearOpcion(ESTADOS, null)
+        ),
+        dificultad: await pedirValido(
+          rl,
+          `Nueva dificultad ${formatearOpciones(DIFICULTADES)} [Enter = no cambiar]: `,
+          parsearOpcion(DIFICULTADES, null)
+        ),
+      });
+      mostrar('Tarea actualizada!');
+      return actualizarTarea(lista, id, cambios, ahora);
+    }
+    case '7': {
+      mostrar(formatearResumen(contarPorEstado(lista)));
+      mostrar(`Vencidas: ${filtrarPor(estaVencida(ahora))(lista).length}`);
+      return lista;
+    }
+    default:
+      mostrar('Opción inválida.');
+      return lista;
+  }
+};
+
+const bucle = async (rl, lista) => {
+  mostrar(formatearMenu(OPCIONES_MENU));
+  const eleccion = recortar(await preguntar(rl, 'Opción: '));
+  if (eleccion === '0') return lista;
+  const nuevaLista = await ejecutarOpcion(rl, lista, eleccion);
+  nuevaLista !== lista && guardarTareas(ARCHIVO, nuevaLista);
+  return bucle(rl, nuevaLista);
+};
+
+const main = async () => {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  await bucle(rl, cargarTareas(ARCHIVO));
+  mostrar('Chau!');
+  rl.close();
+};
+
+main();
